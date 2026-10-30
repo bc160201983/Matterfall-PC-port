@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.2 — 30 October 2026
+
+- File I/O: one lock per descriptor around read, write, lseek and pread/pwrite (positioned I/O
+  moves the Windows file pointer): fixes the random huge allocation ("Ran out of memory").
+- Destroyed guest mutexes and condition variables are retired through a ring before they are freed
+  (from MediEvil): fixes a crash in winpthread's pthread_mutex_lock.
+
 ## 1.0.1 — 30 October 2026
 
 - Native 1440p and 4K output (launcher -> Display -> Output resolution): the game's PS4 Pro 4K

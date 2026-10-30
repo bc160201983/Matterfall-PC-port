@@ -46,7 +46,7 @@ static int host_stat(const char *path,HostStat *s) {
     return 0;
 }
 #define host_fstat(fd,s) _fstat64(fd,s)
-#define host_lseek _lseeki64
+#define host_lseek host_lseek_locked
 #define O_DIRECTORY 0x40000000 /* gow3 marker, removed before _open */
 #else
 typedef struct stat HostStat;
@@ -461,8 +461,25 @@ static int host_fd(int fd) {
 }
 #ifdef _WIN32
 /* The CRT reads and writes at most INT_MAX bytes per call. */
-static ssize_t host_read(int h,void *buffer,uint64_t size) { return read(h,buffer,(unsigned)(size>0x7ffff000 ? 0x7ffff000 : size)); }
-static ssize_t host_write(int h,const void *buffer,uint64_t size) { return write(h,buffer,(unsigned)(size>0x7ffff000 ? 0x7ffff000 : size)); }
+/* Under the descriptor's lock: pread/pwrite move the shared file pointer while they run. */
+static ssize_t host_read(int h,void *buffer,uint64_t size) {
+    compat_fd_lock(h);
+    ssize_t n=read(h,buffer,(unsigned)(size>0x7ffff000 ? 0x7ffff000 : size));
+    compat_fd_unlock(h);
+    return n;
+}
+static ssize_t host_write(int h,const void *buffer,uint64_t size) {
+    compat_fd_lock(h);
+    ssize_t n=write(h,buffer,(unsigned)(size>0x7ffff000 ? 0x7ffff000 : size));
+    compat_fd_unlock(h);
+    return n;
+}
+static int64_t host_lseek_locked(int h,int64_t offset,int whence) {
+    compat_fd_lock(h);
+    int64_t r=_lseeki64(h,offset,whence);
+    compat_fd_unlock(h);
+    return r;
+}
 #else
 #define host_read read
 #define host_write write

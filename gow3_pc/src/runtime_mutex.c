@@ -102,12 +102,34 @@ static ABI int32_t mutex_unlock(GuestMutex **mutex) {
     if (!e) ++unlocks;
     return e;
 }
+/* From the MediEvil port: destroyed mutexes and condition variables are retired through a ring and
+ * only freed after RETIRED later destroys. A game may destroy one while another thread is still
+ * leaving an unlock or a wait on it (the PS4 kernel tolerates it). Freeing at once crashed inside
+ * winpthread's pthread_mutex_lock (Matterfall, Unreal Engine 4: ~35,000 mutexes created and
+ * destroyed in 3 minutes; MediEvil: with NpToolkit2). The memory held is bounded (a few MB). */
+#define RETIRED 8192
+static pthread_mutex_t retired_lock = PTHREAD_MUTEX_INITIALIZER;
+static void *retire(void **ring, size_t *next, void *dead) {
+    pthread_mutex_lock(&retired_lock);
+    void *oldest = ring[*next];
+    ring[*next] = dead;
+    *next = (*next + 1) % RETIRED;
+    pthread_mutex_unlock(&retired_lock);
+    return oldest;
+}
 static ABI int32_t mutex_destroy(GuestMutex **mutex) {
+    static void *ring[RETIRED];
+    static size_t next;
     if (!mutex || (uintptr_t)*mutex == 2) return orbis_error(EINVAL);
     if ((uintptr_t)*mutex < 2) return 0;
-    int e = pthread_mutex_destroy(&(*mutex)->native);
-    if (!e) { free(*mutex); *mutex = (GuestMutex *)(uintptr_t)2; __atomic_add_fetch(&destroyed,1,__ATOMIC_RELAXED); }
-    return orbis_error(e);
+    GuestMutex *dead = *mutex;
+    if (pthread_mutex_trylock(&dead->native)) return orbis_error(EBUSY); /* still held */
+    pthread_mutex_unlock(&dead->native);
+    *mutex = (GuestMutex *)(uintptr_t)2;
+    __atomic_add_fetch(&destroyed,1,__ATOMIC_RELAXED);
+    GuestMutex *oldest = retire(ring, &next, dead);
+    if (oldest) { pthread_mutex_destroy(&oldest->native); free(oldest); }
+    return 0;
 }
 static int deadline_after(struct timespec *end, uint64_t usec) {
     if (clock_gettime(CLOCK_REALTIME, end)) return errno;
@@ -212,9 +234,15 @@ static int32_t ensure_cond(GuestCond **cond) {
 static ABI int32_t cond_destroy(GuestCond **cond) {
     if (!cond) return orbis_error(EINVAL);
     if ((uintptr_t)*cond < 2) return 0;
-    int e = pthread_cond_destroy(&(*cond)->native);
-    if (!e) { free(*cond); *cond = NULL; __atomic_add_fetch(&conds_destroyed,1,__ATOMIC_RELAXED); }
-    return orbis_error(e);
+    /* Retired like mutexes: a woken waiter may still be returning through it. */
+    static void *ring[RETIRED];
+    static size_t next;
+    GuestCond *dead = *cond;
+    *cond = NULL;
+    __atomic_add_fetch(&conds_destroyed,1,__ATOMIC_RELAXED);
+    GuestCond *oldest = retire(ring, &next, dead);
+    if (oldest) { pthread_cond_destroy(&oldest->native); free(oldest); }
+    return 0;
 }
 
 /* gow3 29 Oct 2026 (threads work): GOW3_FUTEX_COND (default on, =0 off) - guest condition

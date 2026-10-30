@@ -51,6 +51,9 @@ static inline int compat_mkdir(const char *path, int mode) { (void)mode; return 
 
 /* pread/pwrite on CRT descriptors: positioned I/O that leaves the file offset unchanged. */
 ssize_t compat_pread(int fd, void *buffer, size_t size, int64_t offset);
+/* The descriptor's lock: positioned I/O moves the shared file pointer while it runs. */
+void compat_fd_lock(int fd);
+void compat_fd_unlock(int fd);
 ssize_t compat_pwrite(int fd, const void *buffer, size_t size, int64_t offset);
 #define pread compat_pread
 #define pwrite compat_pwrite

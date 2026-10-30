@@ -58,9 +58,22 @@ int compat_errno_from_win32(unsigned long error) {
     }
 }
 
-/* Positioned I/O on a synchronous handle moves the file pointer: it is restored afterwards.
- * A concurrent read() on the same descriptor would race, as with a shared offset anyway. */
+/* Positioned I/O on a synchronous handle moves the file pointer: it is saved and restored under
+ * the descriptor's lock, which read/write/lseek (compat_fd_lock, runtime_file.c) take too.
+ * gow3 30 Oct 2026 (Matterfall): without the lock, Unreal Engine's loader threads reading the same
+ * pak with pread and read at once restored stale offsets and read the wrong bytes; a garbage
+ * array count then asked for 28 GB ("Ran out of memory", the crash shadPS4 also reports). */
+static SRWLOCK fd_locks[256];
+void compat_fd_lock(int fd) { AcquireSRWLockExclusive(&fd_locks[(unsigned)fd & 255]); }
+void compat_fd_unlock(int fd) { ReleaseSRWLockExclusive(&fd_locks[(unsigned)fd & 255]); }
+static ssize_t positioned_locked(int fd, void *buffer, size_t size, int64_t offset, int write);
 static ssize_t positioned(int fd, void *buffer, size_t size, int64_t offset, int write) {
+    compat_fd_lock(fd);
+    ssize_t r = positioned_locked(fd, buffer, size, offset, write);
+    compat_fd_unlock(fd);
+    return r;
+}
+static ssize_t positioned_locked(int fd, void *buffer, size_t size, int64_t offset, int write) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) { errno = EBADF; return -1; }
     if (offset < 0) { errno = EINVAL; return -1; }
