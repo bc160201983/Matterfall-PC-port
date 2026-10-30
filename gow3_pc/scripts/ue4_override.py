@@ -227,6 +227,28 @@ def set_values(ini, values, engine=None):
     return text.replace('\n', '\r\n').encode('utf-8')
 
 
+# The game's own GPU heaps when its PS4Engine.ini does not set them (eboot 0x491d7c8, 0x491d7d0).
+HEAP_DEFAULTS_MB = {'r.GarlicHeapSizeMB': 2600, 'r.OnionHeapSizeMB': 500}
+# Of the extra heap memory (gpu_heap_extra_mb), this much goes to the onion heap (CPU-written GPU
+# data; 300 MB, up to 228 MB used at 4K output), the rest to the garlic heap.
+ONION_EXTRA_MB = 128
+
+
+def heap_mb(ini, variable):
+    """A heap size (r.GarlicHeapSizeMB, r.OnionHeapSizeMB) in the [SystemSettings] of a
+    PS4Engine.ini (Matterfall: 2800 and 300)."""
+    section = None
+    for line in ini.decode('utf-8-sig', errors='replace').splitlines():
+        line = line.strip()
+        if line.startswith('['):
+            section = line
+        elif section == '[SystemSettings]' and '=' in line:
+            key, value = (part.strip() for part in line.split('=', 1))
+            if key.lower() == variable.lower() and value.isdigit():
+                return int(value)
+    return HEAP_DEFAULTS_MB[variable]
+
+
 def frame_rate_range(fps):
     """UGameEngine::GetMaxTickRate on consoles: the game ticks at most at the upper bound of
     SmoothedFrameRateRange (Matterfall's DefaultEngine.ini: below 62, so 60 FPS) and t.MaxFPS.
@@ -406,12 +428,24 @@ def apply(game, update=None, options=None, fps=60):
     engine = frame_rate_range(fps) if fps > 60 else {}
     if fps > 60:
         values['t.MaxFPS'] = str(fps)
-    if not values and not engine:
+    heap_extra = int(options.get('gpu_heap_extra_mb') or 0)
+    if not values and not engine and not heap_extra:
         pak.unlink(missing_ok=True)
         return 'the game\'s own PS4 settings (render scale 84%, 60 FPS)'
     paks = game_paks(game, update)
     cache = {}
-    files = {CONFIG: set_values(read_file(paks, CONFIG, cache), values, engine)}
+    config = read_file(paks, CONFIG, cache)
+    if heap_extra:
+        # The GPU heaps grow by the direct memory added above the PS4's (run_matterfall.py,
+        # GOW3_DMEM_MB), so the CPU heap keeps its size. The game reads both at start from
+        # [SystemSettings] (eboot 0x4cd480).
+        onion = ONION_EXTRA_MB if heap_extra > ONION_EXTRA_MB else 0
+        # One heap pool's free-list sizes are 32-bit (eboot 0x5e170): at most 4094 MB; the rest of a
+        # larger GOW3_DMEM_MB then goes to the CPU heap.
+        values['r.GarlicHeapSizeMB'] = str(min(heap_mb(config, 'r.GarlicHeapSizeMB') + heap_extra - onion, 4094))
+        if onion:
+            values['r.OnionHeapSizeMB'] = str(heap_mb(config, 'r.OnionHeapSizeMB') + onion)
+    files = {CONFIG: set_values(config, values, engine)}
     edits = []
     for name in BLUEPRINTS:
         try:

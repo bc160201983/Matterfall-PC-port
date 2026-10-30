@@ -144,12 +144,32 @@ def main():
         subprocess.run([sys.executable, str(SCRIPTS / script), str(code), '--out', str(out), *extra], check=True,
                        stdin=subprocess.DEVNULL)
 
+    # Native output above 1080p needs two eboot patches (matterfall_settings.OUTPUT_PATCHES).
+    native_output = settings.output_size(values)[1] > 1080
+    if native_output:
+        problem = settings.apply_output_patches(out / 'boot-linked.bin')
+        if problem:
+            print(f'Native output: not possible with this game build ({problem}); output stays 1080p', flush=True)
+            native_output = False
+        else:
+            width, height = settings.output_size(values)
+            print(f'Native output: {width}x{height}', flush=True)
+
+    # The largest scenes do not fit the game's graphics memory (matterfall_settings.MAX_RENDER_PIXELS).
+    scale = settings.render_scale(values)
+    if scale != values.get('ue4_render_scale', 'console'):
+        width, height = settings.output_size(values)
+        print(f'Render scale: {values["ue4_render_scale"]}% of {width}x{height} is more than the graphics '
+              f'memory holds; {scale}% is used', flush=True)
+        values = dict(values, ue4_render_scale=scale)
     env = dict(os.environ)
     # Values derived on the previous start ("Apply and restart" inherits them) are derived again.
     for key in env.pop('GOW3_DERIVED', '').split(','):
         env.pop(key, None)
     derived = []
     for key, value in settings.environment(values).items():
+        if key in ('GOW3_INTERNAL_WIDTH', 'GOW3_INTERNAL_HEIGHT') and not native_output:
+            continue
         if key not in env:
             env[key] = value
             derived.append(key)
@@ -166,14 +186,26 @@ def main():
         env['PATH'] = f'{clang64}{os.pathsep}{env.get("PATH", "")}'
     print('Settings:', config, '-', settings.summary(values), flush=True)
 
-    # Render scale, quality and frame rate: the Unreal Engine config override pak.
+    # Render scale, quality and frame rate: the Unreal Engine config override pak. Its graphics heap
+    # (r.GarlicHeapSizeMB) grows by exactly the direct memory added above the PS4's (GOW3_DMEM_MB),
+    # so the CPU heap keeps its PS4 size (matterfall_settings.gpu_heap_extra_mb).
+    try:
+        heap_extra = max(0, int(env.get('GOW3_DMEM_MB', settings.DMEM_PS4_MB)) - settings.DMEM_PS4_MB)
+    except ValueError:
+        heap_extra = 0
+    heap_set = False
     if not args.no_overrides:
         import ue4_override
+        options = dict(settings.ue4_options(values), gpu_heap_extra_mb=heap_extra)
         try:
-            print('Unreal Engine settings:', ue4_override.apply(game, update, settings.ue4_options(values),
+            print('Unreal Engine settings:', ue4_override.apply(game, update, options,
                                                                 settings.engine_fps(values)), flush=True)
+            heap_set = True
         except (OSError, ValueError) as error:
             print(f'Unreal Engine settings: unchanged ({error})', flush=True)
+    if heap_extra and not heap_set and 'GOW3_DMEM_MB' in derived:
+        env.pop('GOW3_DMEM_MB')
+        print('Graphics heap: the PS4 size, 2800 MB (no override pak written)', flush=True)
 
     from save_backup import backup
     try:

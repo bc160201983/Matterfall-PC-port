@@ -9,7 +9,8 @@ One file holds three kinds of keys:
   - Unreal Engine settings that tools/run_matterfall.py writes into a config override pak at
     every start (scripts/ue4_override.py): ue4_render_scale, ue4_quality, ue4_<group>, engine_fps;
   - start options that become GOW3_* environment variables: window_size, frame_limit,
-    anisotropy, language, speakers, shader options, game_dir, update_dir.
+    anisotropy, language, speakers, shader options, game_dir, update_dir; gpu_heap_extra_mb (hidden:
+    the garlic heap's extra MB instead of the estimate, gpu_heap_extra_mb()).
 The runtime keeps keys it does not know when it saves the file.
 """
 import ctypes
@@ -31,7 +32,7 @@ DEFAULTS = {
     **{f'ue4_{toggle}': 'console' for toggle in ue4_override.TOGGLES},
     'ue4_anti_aliasing': 'console', 'ue4_sharpen': 'off', 'ue4_upscale_filter': 'console',
     # start options (environment)
-    'window_size': 'auto', 'frame_limit': '60', 'anisotropy': '0', 'language': '1', 'speakers': 'auto',
+    'output_resolution': '1080', 'window_size': 'auto', 'frame_limit': '60', 'anisotropy': '0', 'language': '1', 'speakers': 'auto',
     # The runtime's own defaults: only a changed value becomes an environment variable.
     'background_warmup': '1', 'parallel_warmup': '0', 'pipeline_binaries': '0', 'perf_log': '0',
     'game_dir': '', 'update_dir': '',
@@ -167,6 +168,133 @@ def frame_limit(values):
     return '60', None, '60 FPS'
 
 
+# Native output (1440p, 4K). The game picks its display size once at start (eboot 0x4c3170): it
+# reads the display mode from VideoOut and switches to 3840x2160 when the display has more than
+# 1080 lines, but its shipped [HMQ] ProMode=1 forces 1920x1080 again. Its back buffers are made
+# once at that size and never resized, so a live r.SetRes cannot change the output. The runtime
+# reports the chosen display (GOW3_INTERNAL_WIDTH/HEIGHT) and two eboot patches let the game use
+# it: the ProMode clamp is skipped, and the reported size is used instead of a fixed 3840x2160.
+# Patterns checked unique in the 1.00 and 1.01 eboots (both at the same addresses).
+OUTPUT_SIZES = {'1080': (1920, 1080), '1440': (2560, 1440), '2160': (3840, 2160)}
+OUTPUT_PATCHES = (
+    # ProMode == 1 -> 1920x1080 (0x4c344b): jne -> jmp, the clamp is skipped.
+    ('ProMode 1080p clamp', '83 7D 9C 01 75 15 48 8D 0D ?? ?? ?? ?? 48 B8 80 07 00 00 38 04 00 00 48 89 41 08',
+     4, '75', 'EB'),
+    # height > 1080 -> fixed 3840x2160 (0x4c31f1): mov rax,[rbp-0x60] (the reported size) + nop.
+    ('reported display size', '81 7D A4 39 04 00 00 0F 82 ?? ?? ?? ?? 48 B8 00 0F 00 00 70 08 00 00 48 89 43 08',
+     13, '48 B8 00 0F 00 00 70 08 00 00', '48 8B 45 A0 66 0F 1F 44 00 00'),
+)
+
+
+def output_size(values):
+    """(width, height) of the game's native output."""
+    return OUTPUT_SIZES.get(values.get('output_resolution', '1080'), (1920, 1080))
+
+
+def _find(data, pattern):
+    import re
+    regex = b''.join(b'.' if byte == '??' else re.escape(bytes.fromhex(byte)) for byte in pattern.split())
+    return [match.start() for match in re.finditer(regex, data, re.S)]
+
+
+def apply_output_patches(image):
+    """Patches the linked image for native output above 1080p. Returns None when done, else why not
+    (nothing is changed then: every patch must match exactly once with its original bytes)."""
+    path = Path(image)
+    data = bytearray(path.read_bytes())
+    edits = []
+    for name, pattern, offset, original, replacement in OUTPUT_PATCHES:
+        hits = _find(data, pattern)
+        if len(hits) != 1:
+            return f'{name}: pattern found {len(hits)} times'
+        at = hits[0] + offset
+        old, new = bytes.fromhex(original), bytes.fromhex(replacement)
+        if data[at:at + len(old)] != old:
+            return f'{name}: unexpected bytes'
+        edits.append((at, new))
+    for at, new in edits:
+        data[at:at + len(new)] = new
+    path.write_bytes(bytes(data))
+    return None
+
+
+# Graphics memory above the PS4's settings. Unreal Engine's PS4 code splits the direct memory at
+# start (eboot 0x4cd480): the CPU heap gets "direct memory - 33 MB - reserved - onion - garlic"
+# and later uses that as a 32-bit size, the garlic (GPU) heap gets r.GarlicHeapSizeMB from
+# PS4Engine.ini [SystemSettings] (Matterfall: 2800, onion 300). Larger render targets (render
+# scale above 100%, 1440p/4K output, Ultra shadows) outgrow the 2800 MB: the heap then adds pools
+# of the failed allocation's size, printing "Failed to allocate GPU memory" for every pool it
+# tries first (slow, and it crashed after some hundred pools). Raising the reported direct memory
+# alone breaks the CPU heap (8192 MB wrapped it to 728 MB). Raising both by the same amount keeps
+# the CPU heap at its PS4 size and gives the garlic heap the room. One garlic pool's free-list
+# sizes are 32-bit (eboot 0x5e170), so the heap stays below 4 GiB: GPU_HEAP_MAX_MB.
+DMEM_PS4_MB = 5056
+GPU_HEAP_PS4_MB = 2800
+GPU_HEAP_MAX_MB = 4094
+
+
+# Peak garlic use measured in level 1-1 (the game's own heap counters, 1 s samples, Ultra unless
+# noted): PS4 settings (1613x907) 1984 MB; 1613x907 2207 MB (4096 shadow maps); 4275x2405 3714 MB;
+# 5120x2880 3795 and 3832 MB, and in a third run more than the 4094 MB heap for a moment at the
+# level start. Unreal's render target pool keeps released targets for a while
+# (r.RenderTargetPoolMin=500), so the level start peaks above the frame's own needs. Estimate:
+# 2000 MB, plus the quality's fixed part, plus 170 MB per million pixels above the PS4's, plus a
+# margin. Heap that is not used costs commit charge only (the pages are never touched).
+GPU_HEAP_BASE_MB = 2000
+GPU_HEAP_MB_PER_MPIXEL = 170
+GPU_HEAP_QUALITY_MB = {'high': 128, 'ultra': 256}  # by the shadows level
+GPU_HEAP_MARGIN_MB = 512  # fragmentation and short peaks between the samples
+PS4_RENDER_PIXELS = 1613 * 907
+# The largest scene that fits the 4094 MB heap (4275x2405, 1440p at 167%). Larger ones make the
+# heap add pools in memory the game is not told about once it is full, and the game crashed soon
+# after that (0xC0000005: the owner's 1440p at 200% with the PS4's heap; 5760x3240 with 4094 MB)
+# or, without that memory, at once. 2160p at 200% also ran at 13 FPS (GPU-bound, RTX 5080).
+MAX_RENDER_PIXELS = 10500000
+
+
+def _shadows(values):
+    level = values.get('ue4_shadows', 'preset')
+    return values.get('ue4_quality', 'console') if level in ('preset', '', None) else level
+
+
+def _scene_pixels(values, scale):
+    width, height = output_size(values)
+    percent = int(scale) if str(scale).isdigit() else 84
+    return width * height * percent * percent // 10000
+
+
+def render_scale(values):
+    """The render scale that is used: the chosen one, or the largest listed scale below it whose
+    scene has at most MAX_RENDER_PIXELS."""
+    scale = values.get('ue4_render_scale', 'console')
+    if _scene_pixels(values, scale) <= MAX_RENDER_PIXELS:
+        return scale
+    chosen = int(scale) if scale.isdigit() else 84
+    fitting = [s for s in ue4_override.RENDER_SCALES if s.isdigit() and int(s) <= chosen
+               and _scene_pixels(values, s) <= MAX_RENDER_PIXELS]
+    return max(fitting, key=int) if fitting else 'console'
+
+
+def render_pixels(values):
+    """Pixels of the scene the game draws: the output size times the used render scale squared."""
+    return _scene_pixels(values, render_scale(values))
+
+
+def gpu_heap_extra_mb(values):
+    """GPU heap memory above the PS4's for these settings (0: the PS4's heaps): the garlic heap's
+    extra (64 MB steps, matterfall.ini gpu_heap_extra_mb overrides it) plus, with any, 128 MB for
+    the onion heap (ue4_override.ONION_EXTRA_MB)."""
+    override = values.get('gpu_heap_extra_mb', 'auto')
+    if override.isdigit():
+        garlic = int(override)
+    else:
+        need = (GPU_HEAP_BASE_MB + GPU_HEAP_QUALITY_MB.get(_shadows(values), 0) + GPU_HEAP_MARGIN_MB
+                + GPU_HEAP_MB_PER_MPIXEL * max(0, render_pixels(values) - PS4_RENDER_PIXELS) // 1000000)
+        garlic = -(-max(0, need - GPU_HEAP_PS4_MB) // 64) * 64
+    garlic = min(garlic, GPU_HEAP_MAX_MB - GPU_HEAP_PS4_MB)
+    return garlic + ue4_override.ONION_EXTRA_MB if garlic else 0
+
+
 def environment(values):
     """GOW3_* variables for the start options (the user's own environment still wins)."""
     env = {}
@@ -188,15 +316,21 @@ def environment(values):
         env['GOW3_LANGUAGE'] = values['language']  # PS4 language code; the runtime's default is 1
     if values.get('speakers', 'auto') in ('2', '6', '8'):
         env['GOW3_AUDIO_SPEAKERS'] = values['speakers']
-    # Above the PS4's settings the game's render targets outgrow the PS4's 5056 MB of direct
-    # memory: at 200% render scale it stopped with "Failed to allocate direct memory ... Size =
-    # 67108864, MemoryType = Garlic" (PS4Memory.cpp line 265) on entering a level. A larger
-    # reported pool does not work: the game hands its CPU heap all the free memory as a 32-bit size
-    # (8192 MB shrank the heap to 728 MB, 9152 MB made later free-memory checks wrap and fail).
-    # Spare memory the game is not told about takes the graphics allocations that no longer fit
-    # (runtime_memory.c). Only the memory the game really allocates is committed.
-    scale = values.get('ue4_render_scale', 'console')
-    if (scale.isdigit() and int(scale) > 100) or values.get('ue4_quality') in ('high', 'ultra'):
+    width, height = output_size(values)
+    if height > 1080:
+        env['GOW3_INTERNAL_WIDTH'], env['GOW3_INTERNAL_HEIGHT'] = str(width), str(height)
+    # The larger graphics heap is reported as more direct memory. tools/run_matterfall.py raises
+    # r.GarlicHeapSizeMB in the override pak by the same amount (GOW3_DMEM_MB - DMEM_PS4_MB) and
+    # drops this variable when the pak cannot be written: alone it would break the CPU heap.
+    extra = gpu_heap_extra_mb(values)
+    if extra:
+        env['GOW3_DMEM_MB'] = str(DMEM_PS4_MB + extra)
+    # Above the PS4's settings, direct memory the game is not told about (runtime_memory.c) is a
+    # last resort for a heap that is still full for a moment: its extra pools go there instead of
+    # failing at once (without it a full heap stopped the game at once). Only the memory really
+    # allocated is committed.
+    if (extra or height > 1080 or render_pixels(values) > 1920 * 1080
+            or values.get('ue4_quality') in ('high', 'ultra')):
         env['GOW3_DMEM_SPARE_MB'] = '4096'
     if values.get('background_warmup', '1') == '0':
         env['GOW3_BACKGROUND_WARMUP'] = '0'
@@ -212,6 +346,7 @@ def summary(values):
     _ini, _fixed, limit = frame_limit(values)
     scale = values.get('ue4_render_scale', 'console')
     scale_text = 'PS4 84%' if scale == 'console' else f'{scale}%'
-    return (f'render scale {scale_text}, quality {values.get("ue4_quality", "console")}, engine up to '
+    width, height = output_size(values)
+    return (f'output {width}x{height}, render scale {scale_text}, quality {values.get("ue4_quality", "console")}, engine up to '
             f'{engine_fps(values)} FPS, frame limit {limit}, {values.get("display_mode", "windowed")}'
             + (f' {values["window_size"]}' if values.get('window_size', 'auto') != 'auto' else ''))

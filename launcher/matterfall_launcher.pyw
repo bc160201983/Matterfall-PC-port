@@ -68,13 +68,13 @@ STOP_RED = "#d0455f"
 
 # -- option lists (value, label) ----------------------------------------------------------------
 DISPLAY_MODES = [("windowed", "Windowed"), ("borderless", "Borderless"), ("fullscreen", "Fullscreen")]
+OUTPUT_RESOLUTIONS = [("1080", "1080p (PS4)"), ("1440", "1440p"), ("2160", "4K (2160p)")]
 WINDOW_SIZES = [("auto", "Auto"), ("1280x720", "720p"), ("1600x900", "900p"), ("1920x1080", "1080p"),
                 ("2560x1440", "1440p"), ("3840x2160", "4K")]
-RENDER_SCALES = [("console", "PS4 (84%, 1613×907)"), ("50", "50% (960×540, fastest)"),
-                 ("67", "67% (1280×720)"), ("75", "75% (1440×810)"), ("84", "84% (1613×907)"),
-                 ("100", "100% (1920×1080, native)"), ("125", "125% (2400×1350)"),
-                 ("133", "133% (2560×1440, 1440p)"), ("150", "150% (2880×1620)"),
-                 ("167", "167% (3200×1800, 1800p)"), ("200", "200% (3840×2160, 4K)")]
+# Percent of the output resolution (Display tab); the pixel sizes shown are for 1080p output.
+RENDER_SCALES = [("console", "PS4 (84%)"), ("50", "50% (fastest)"), ("67", "67%"), ("75", "75%"),
+                 ("84", "84%"), ("100", "100% (native)"), ("125", "125%"), ("133", "133%"), ("150", "150%"),
+                 ("167", "167%"), ("200", "200% (4K at 1080p output)")]
 PRESETS = [("low", "LOW", "Fewer shadows, no reflections, shorter view distance. For integrated graphics."),
            ("medium", "MEDIUM", "A little below the PS4: lighter shadows and effects."),
            ("console", "CONSOLE", "Exactly the PS4 settings (the game's own Blueprint values)."),
@@ -518,7 +518,8 @@ class Launcher:
         if key == "frame_limit":
             # Limits in the runtime's own list are its fps_limit (the in-game menu changes it).
             self.save({"fps_limit": value if value in ms.RUNTIME_LIMITS else "120"})
-        if key in ("ue4_render_scale", "fsr1", "window_size", "display_mode"):
+        if key in ("ue4_render_scale", "fsr1", "window_size", "display_mode", "output_resolution", "ue4_quality",
+                   "ue4_shadows"):
             self.refresh_resolution_note()
         if key in ("engine_fps", "frame_limit"):
             self.refresh_fps_note()
@@ -803,9 +804,9 @@ class Launcher:
 
         self.section(page, "RESOLUTION")
         self.choice(page, "ue4_render_scale", "Render resolution",
-                    "The 3D scene's size (r.ScreenPercentage of the game's 1920×1080 picture). The PS4 draws 84%. "
-                    "Above 100% the scene is drawn larger and scaled down (supersampling: 200% renders 4K, "
-                    "much sharper on any screen). The HUD stays sharp at 1080p.", RENDER_SCALES, dropdown=True)
+                    "The 3D scene's size as a percentage of the output resolution (Display tab). The PS4 draws "
+                    "84%. Above 100% the scene is drawn larger and scaled down (supersampling: 200% of 1080p "
+                    "renders 4K). For a 4K screen, 4K output at 100% is sharper than 1080p at 200%.", RENDER_SCALES, dropdown=True)
         self.choice(page, "ue4_anti_aliasing", "Anti-aliasing",
                     "The game's temporal AA smooths edges but softens a little in motion. Max is steadier; FXAA "
                     "is sharper; Off shows raw pixels (best with a high render resolution).", ANTI_ALIASING)
@@ -822,10 +823,8 @@ class Launcher:
         self.section(page, "NOT AVAILABLE FOR THIS GAME",
                      "FSR 3.1, FSR 4 and DLSS upscaling need the game's motion vectors, which the runtime only "
                      "knows for Uncharted; Unreal's own temporal upsampling arrived in a later engine (4.19). "
-                     "Material quality stays at the PS4's (the game ships shaders for that level only). Native "
-                     "1440p/4K output and other aspect ratios need a live r.SetRes in the runtime: the PS4 "
-                     "renderer always outputs 1920×1080. Use Render resolution for detail and the Display tab "
-                     "for the window.")
+                     "Material quality stays at the PS4's (the game ships shaders for that level only). Other "
+                     "aspect ratios than 16:9: the game's camera and HUD are made for 16:9.")
         return page
 
     def draw_preset(self, name, hover=False):
@@ -862,6 +861,7 @@ class Launcher:
             if key in self.widgets:
                 self.widgets[key].set(value)
         self.redraw_presets()
+        self.refresh_resolution_note()
 
     # -- display ----------------------------------------------------------------------------
 
@@ -871,17 +871,21 @@ class Launcher:
         self.choice(page, "display_mode", "Display mode",
                     "Borderless covers the screen at the desktop resolution without changing the display mode. "
                     "Alt+Enter and the in-game menu (Insert) switch it too.", DISPLAY_MODES)
-        self.choice(page, "window_size", "Output size (windowed)",
-                    "The window's size and place (centred). The game itself always outputs 1920×1080 and is "
-                    "scaled to the window or screen: set Render resolution (Graphics) for more detail.", WINDOW_SIZES)
+        self.choice(page, "output_resolution", "Output resolution",
+                    "The size the game itself outputs: menus, HUD and the 3D scene at that resolution (the PS4 "
+                    "Pro's own 4K mode, unlocked). Render resolution (Graphics) scales the 3D scene within it. "
+                    "1440p and 4K need more graphics memory and GPU power.", OUTPUT_RESOLUTIONS)
+        self.choice(page, "window_size", "Window size (windowed)",
+                    "The window's size and place (centred). The game's output is scaled to the window or screen.",
+                    WINDOW_SIZES)
         self.resolution_note = tk.Label(page, text="", font=self.f_small, bg=BG, fg=ACCENT, anchor="w",
                                         justify="left", wraplength=self.width - self.px(120))
         self.resolution_note.pack(side="top", fill="x", pady=(0, self.px(8)))
         self.toggle(page, "vsync", "VSync", "Waits for the monitor: no tearing. Off allows tearing for the lowest latency.")
         self.section(page, "SCALING TO THE SCREEN")
         self.toggle(page, "fsr1", "Upscale with FSR 1",
-                    "Enlarges the game's 1080p picture to a larger window or screen (1440p, 4K) with AMD FSR 1 "
-                    "instead of plain filtering. Does nothing at 1080p.")
+                    "Enlarges the game's output to a larger window or screen with AMD FSR 1 instead of plain "
+                    "filtering (for example 1080p output on a 4K screen).")
         self.toggle(page, "rcas", "Sharpening (RCAS)", "AMD's contrast-adaptive sharpening of the shown picture.")
         self.choice(page, "rcas_strength", "Sharpening strength", None,
                     [("25", "25%"), ("50", "50%"), ("75", "75%"), ("100", "100%")])
@@ -902,7 +906,13 @@ class Launcher:
                  "borderless": "the whole screen (borderless)", "fullscreen": "the whole screen (fullscreen)"}[
             mode if mode in ("windowed", "borderless", "fullscreen") else "windowed"]
         fsr = " with FSR 1" if self.ini.get("fsr1") == "1" else ""
-        self.resolution_note.config(text=f"Now: the 3D scene at {label}, output 1920×1080, shown on {shown}{fsr}.")
+        output = dict(OUTPUT_RESOLUTIONS).get(self.ini.get("output_resolution", "1080"), "1080p")
+        used = ms.render_scale(ms.settings(self.ini))
+        if used != scale:
+            # The scene would not fit the game's graphics memory (matterfall_settings.render_scale).
+            label = (f"{dict(RENDER_SCALES).get(used, used)} (limited: {dict(RENDER_SCALES).get(scale, scale)} "
+                     f"does not fit the game's graphics memory at this output and quality)")
+        self.resolution_note.config(text=f"Now: the 3D scene at {label} of {output}, shown on {shown}{fsr}.")
 
     # -- performance ------------------------------------------------------------------------
 

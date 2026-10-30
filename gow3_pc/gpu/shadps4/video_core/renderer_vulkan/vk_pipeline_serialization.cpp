@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -14,6 +15,7 @@
 #include <unordered_set>
 #include <fstream>
 #include <map>
+#include <string>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -41,6 +43,56 @@ static constexpr u32 ShaderMetaVersion = 13u; // gow3: the hash of the binary it
 /// written together with them (DataBase::WrittenTogether).
 static constexpr u32 LegacyShaderMetaVersion = 12u; // BufferResource::access_extent
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
+
+// gow3 30 Oct 2026 (Matterfall 1.0.0, Ultra title screen drawn black): the versions above name
+// the layout of the cached files, not the translation that produced them, and they were not
+// bumped for most recompiler changes of this port; nor do the cache keys record the GOW3_*
+// switches that change the translation (GOW3_CLAMP_LEGACY_MATH said "clear the pipeline cache
+// when changing it"). A cache written by another build was therefore reused as it was. The
+// shader profile blob now also carries a stamp of the translation: this version (bump it for a
+// translation change outside the hashed sources), a hash of the sources that translate shaders
+// and lay out the cache (CMakeLists.txt, recomputed at every configure), and the switches.
+// A cache with another stamp, or none (1.0.0 and earlier), is cleared and rebuilt.
+static constexpr u32 TranslationVersion = 1u;
+#ifndef GOW3_TRANSLATION_SOURCES_HASH
+#define GOW3_TRANSLATION_SOURCES_HASH 0ull
+#endif
+static constexpr u64 TranslationSourcesHash = GOW3_TRANSLATION_SOURCES_HASH;
+/// Environment switches read by the shader recompiler that change the SPIR-V it emits.
+static constexpr std::array TranslationSwitches = {
+    "GOW3_SHADER_LOOP_LIMIT",     "GOW3_CLAMP_LEGACY_MATH",      "GOW3_WAVE64_ALL_BALLOTS",
+    "GOW3_LDS_BARRIERS_MULTIWAVE", "GOW3_LDS_BARRIER_REGIONS",   "GOW3_WAVE_BUFFER_BARRIERS",
+    "GOW3_LDS_BARRIER_SITES",     "GOW3_EFFECT_SHARP_FILTER",
+};
+
+struct CacheStamp {
+    static constexpr u32 Magic = 0x54534354u; // "TCST"
+    u32 magic{};
+    u32 translation_version{};
+    u64 sources_hash{};
+    u64 switches_hash{};
+    u32 versions{}; ///< binary, meta and pipeline key versions (8 bits each)
+    u32 reserved{};
+
+    bool operator==(const CacheStamp&) const = default;
+
+    static CacheStamp Current() {
+        std::string switches;
+        for (const char* name : TranslationSwitches) {
+            const char* value = std::getenv(name);
+            switches += fmt::format("{}={};", name, value ? value : "");
+        }
+        return CacheStamp{
+            .magic = Magic,
+            .translation_version = TranslationVersion,
+            .sources_hash = TranslationSourcesHash,
+            .switches_hash = XXH3_64bits(switches.data(), switches.size()),
+            .versions = (ShaderBinaryVersion & 0xff) | (ShaderMetaVersion & 0xff) << 8 |
+                        (PipelineKeyVersion & 0xff) << 16,
+        };
+    }
+};
+static_assert(sizeof(CacheStamp) == 32);
 
 /// gow3: the cache name of a shader's SPIR-V. Shaders that gained multi-wave LDS barriers get a
 /// new name, so binaries cached before the fix are not found and only those shaders recompile.
@@ -1122,6 +1174,42 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
     return true;
 }
 
+/// gow3 30 Oct 2026: the "profile" blob: the GPU's shader profile and the translation stamp.
+static std::vector<u8> CacheProfileBlob(const Shader::Profile& profile) {
+    const auto stamp = Serialization::CacheStamp::Current();
+    std::vector<u8> data(sizeof(profile) + sizeof(stamp));
+    std::memcpy(data.data(), &profile, sizeof(profile));
+    std::memcpy(data.data() + sizeof(profile), &stamp, sizeof(stamp));
+    return data;
+}
+
+struct StoredCacheProfile {
+    std::optional<Shader::Profile> profile;
+    std::optional<Serialization::CacheStamp> stamp; ///< none: written before stamps
+};
+
+static StoredCacheProfile ReadCacheProfileBlob(const std::vector<u8>& data) {
+    StoredCacheProfile stored;
+    if (data.size() != sizeof(Shader::Profile) &&
+        data.size() != sizeof(Shader::Profile) + sizeof(Serialization::CacheStamp)) {
+        if (!data.empty()) {
+            LOG_WARNING(Render, "Pipeline cache profile has unexpected size ({} != {})",
+                        data.size(), sizeof(Shader::Profile));
+        }
+        return stored;
+    }
+    stored.profile.emplace();
+    std::memcpy(&*stored.profile, data.data(), sizeof(Shader::Profile));
+    if (data.size() > sizeof(Shader::Profile)) {
+        Serialization::CacheStamp stamp{};
+        std::memcpy(&stamp, data.data() + sizeof(Shader::Profile), sizeof(stamp));
+        if (stamp.magic == Serialization::CacheStamp::Magic) {
+            stored.stamp = stamp;
+        }
+    }
+    return stored;
+}
+
 /// gow3 26 Oct 2026: true when the previous start crashed in the warm-up (warmup-crashed.txt):
 /// the cache is then cleared (only this game's, this GPU's) and starts over like a new one.
 bool PipelineCache::DropCrashedCache() {
@@ -1131,9 +1219,7 @@ bool PipelineCache::DropCrashedCache() {
     auto& db = Storage::DataBase::Instance();
     db.Clear();
     db.FinishPreload();
-    std::vector<u8> profile_data(sizeof(profile));
-    std::memcpy(profile_data.data(), &profile, sizeof(profile));
-    db.Save(Storage::BlobType::ShaderProfile, "profile", std::move(profile_data));
+    db.Save(Storage::BlobType::ShaderProfile, "profile", CacheProfileBlob(profile));
     std::printf("Pipeline cache: the last start crashed while the cache was loading (graphics "
                 "driver); the cache was cleared and is rebuilt as the game plays\n");
     std::fflush(stdout);
@@ -1145,59 +1231,60 @@ bool PipelineCache::CheckCacheProfile() {
         return false;
     }
 
-    Storage::DataBase::Instance().Open();
+    auto& db = Storage::DataBase::Instance();
+    db.Open();
+    const auto stamp = Serialization::CacheStamp::Current();
+    std::printf("Pipeline cache: translation stamp v%u %016llx/%016llx\n", stamp.translation_version,
+                static_cast<unsigned long long>(stamp.sources_hash),
+                static_cast<unsigned long long>(stamp.switches_hash));
+    const auto start_new = [&] {
+        db.FinishPreload();
+        db.Save(Storage::BlobType::ShaderProfile, "profile", CacheProfileBlob(profile));
+        return false;
+    };
 
     // Check if cache is compatible
     std::vector<u8> profile_data{};
-    Storage::DataBase::Instance().Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
+    db.Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
     if (profile_data.empty()) {
-        Storage::DataBase::Instance().FinishPreload();
-
-        profile_data.resize(sizeof(profile));
-        std::memcpy(profile_data.data(), &profile, sizeof(profile));
-        Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
-                                           std::move(profile_data));
-        return false;
+        return start_new();
     }
-    if (profile_data.size() != sizeof(Shader::Profile)) {
-        LOG_WARNING(Render, "Pipeline cache profile has unexpected size ({} != {})",
-                    profile_data.size(), sizeof(Shader::Profile));
+    const auto stored = ReadCacheProfileBlob(profile_data);
+    if (stored.profile && *stored.profile == profile && stored.stamp &&
+        *stored.stamp == stamp) {
+        return true;
     }
-    Shader::Profile cached_profile{};
-    if (profile_data.size() == sizeof(Shader::Profile)) {
-        std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
+    if (stored.profile && *stored.profile == profile) {
+        // gow3 30 Oct 2026: this GPU's cache, translated by another build (or with other
+        // GOW3_* shader switches; none recorded: 1.0.0 and earlier). Its shaders may differ from
+        // what this build makes of the same game code: none of it is used.
+        std::printf("Pipeline cache: written by %s; cleared, shaders compile again as the game "
+                    "plays\n",
+                    stored.stamp ? "another build of the shader translation (or with other "
+                                   "GOW3_* shader switches)"
+                                 : "a build without a translation stamp (1.0.0 or earlier)");
+        std::fflush(stdout);
+        db.Clear();
+        return start_new();
     }
-    if (profile_data.size() != sizeof(Shader::Profile) || cached_profile != profile) {
-        // gow3: upstream closed the cache for the session here, so it was never rewritten
-        // and every later session compiled every shader again (stutters on each new area).
-        // Start a fresh cache for this build and GPU instead.
-        LOG_WARNING(Render, "Pipeline cache isn't compatible with current system: rebuilding it");
-        // gow3 21 Oct 2026: a profile of the same build but another GPU (hybrid laptops) is kept
-        // aside instead, and this GPU's own cache comes back if it was kept (SwapCache).
-        if (profile_data.size() == sizeof(Shader::Profile)) {
-            const bool restored = Storage::DataBase::Instance().SwapCache(
-                [&](const std::vector<u8>& data) {
-                    Shader::Profile stored{};
-                    if (data.size() != sizeof(stored)) {
-                        return false;
-                    }
-                    std::memcpy(&stored, data.data(), sizeof(stored));
-                    return stored == profile;
-                });
-            if (restored) {
-                return true;
-            }
-        } else {
-            Storage::DataBase::Instance().Clear();
+    // gow3: upstream closed the cache for the session here, so it was never rewritten
+    // and every later session compiled every shader again (stutters on each new area).
+    // Start a fresh cache for this build and GPU instead.
+    LOG_WARNING(Render, "Pipeline cache isn't compatible with current system: rebuilding it");
+    // gow3 21 Oct 2026: a profile of the same build but another GPU (hybrid laptops) is kept
+    // aside instead, and this GPU's own cache comes back if it was kept (SwapCache).
+    if (stored.profile && stored.stamp && *stored.stamp == stamp) {
+        const bool restored = db.SwapCache([&](const std::vector<u8>& data) {
+            const auto kept = ReadCacheProfileBlob(data);
+            return kept.profile && *kept.profile == profile && kept.stamp && *kept.stamp == stamp;
+        });
+        if (restored) {
+            return true;
         }
-        Storage::DataBase::Instance().FinishPreload();
-        profile_data.resize(sizeof(profile));
-        std::memcpy(profile_data.data(), &profile, sizeof(profile));
-        Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
-                                           std::move(profile_data));
-        return false;
+    } else {
+        db.Clear();
     }
-    return true;
+    return start_new();
 }
 
 void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {

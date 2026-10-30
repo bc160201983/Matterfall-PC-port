@@ -132,6 +132,28 @@ add_custom_target(host_shaders DEPENDS ${SHADER_HEADERS})
 
 file(GLOB_RECURSE VIDEO_CORE CONFIGURE_DEPENDS shadps4/video_core/*.cpp)
 file(GLOB_RECURSE RECOMPILER CONFIGURE_DEPENDS shadps4/shader_recompiler/*.cpp)
+# gow3 30 Oct 2026: the pipeline cache is stamped with a hash of the code that translates shaders
+# and lays out the cached data (Serialization::CacheStamp), so a cache written by a build whose
+# translation differs is cleared instead of reused. Recomputed at every configure (build.sh).
+file(GLOB_RECURSE GOW3_TRANSLATION_SOURCES CONFIGURE_DEPENDS
+    shadps4/shader_recompiler/*.cpp shadps4/shader_recompiler/*.h
+    shadps4/video_core/amdgpu/*.h
+    shadps4/video_core/renderer_vulkan/vk_pipeline_cache.*
+    shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.*
+    shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.*
+    shadps4/video_core/renderer_vulkan/vk_compute_pipeline.*
+    shadps4/video_core/renderer_vulkan/vk_shader_util.*)
+list(SORT GOW3_TRANSLATION_SOURCES)
+set(GOW3_TRANSLATION_TEXT "")
+foreach(source IN LISTS GOW3_TRANSLATION_SOURCES)
+    file(SHA256 "${source}" source_hash)
+    file(RELATIVE_PATH source_name "${CMAKE_CURRENT_SOURCE_DIR}" "${source}")
+    string(APPEND GOW3_TRANSLATION_TEXT "${source_name}=${source_hash};")
+endforeach()
+string(SHA256 GOW3_TRANSLATION_HASH "${GOW3_TRANSLATION_TEXT}")
+string(SUBSTRING "${GOW3_TRANSLATION_HASH}" 0 16 GOW3_TRANSLATION_HASH)
+set_source_files_properties(shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
+    PROPERTIES COMPILE_DEFINITIONS "GOW3_TRANSLATION_SOURCES_HASH=0x${GOW3_TRANSLATION_HASH}ull")
 list(FILTER VIDEO_CORE EXCLUDE REGEX "renderdoc\\.cpp$")
 set(COMMON
     shadps4/common/decoder.cpp shadps4/common/error.cpp

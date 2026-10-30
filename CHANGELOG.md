@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.1 — 30 October 2026
+
+- Native 1440p and 4K output (launcher -> Display -> Output resolution): the game's PS4 Pro 4K
+  mode, unlocked with two pattern-checked eboot patches; render scale is relative to it.
+- The game's graphics heap (r.GarlicHeapSizeMB) and the reported direct memory grow together with
+  the render resolution, so the CPU heap keeps its PS4 size: no more "Failed to allocate GPU
+  memory", 30 FPS and crash at 1440p 200%. Render scale is capped where the 4 GB heap limit is
+  reached.
+- Pipeline cache stamped with a translation version, a source hash and the shader switches; caches
+  from other builds (1.0.0) are cleared once.
+
 ## 1.0.0 — 30 October 2026
 
 First release.

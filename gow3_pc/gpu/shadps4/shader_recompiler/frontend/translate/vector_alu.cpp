@@ -12,7 +12,8 @@ namespace Shader::Gcn {
 
 // shadPS4 PR #5346 (CLAMP/LEGACY rcp/rsq/log without infinities): opt-in with
 // GOW3_CLAMP_LEGACY_MATH=1 until tested in all three games (it did not fix Uncharted 3's flicker).
-// Cached shaders do not record the switch: clear the pipeline cache when changing it.
+// The pipeline cache stamp records the switch (Serialization::TranslationSwitches): changing it
+// clears the cache.
 static bool ClampLegacyMath() {
     static const bool enabled = [] {
         const char* env = std::getenv("GOW3_CLAMP_LEGACY_MATH");

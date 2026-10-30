@@ -47,8 +47,8 @@ gow3_pc runtime and shadPS4's video core). What changed and when: [CHANGELOG.md]
   reflections, view distance, level of detail, foliage, effects, post-processing, detail,
   textures, anisotropic filtering, motion blur, depth of field, lens flares, chromatic
   aberration, eye adaptation, anti-aliasing and sharpening.
-- **Display:** windowed, borderless or fullscreen; window size; VSync; FPS counter; FSR 1 and
-  sharpening.
+- **Display:** output resolution 1080p, 1440p or native 4K; windowed, borderless or fullscreen;
+  window size; VSync; FPS counter; FSR 1 and sharpening.
 - **Performance:** engine frame rate above 60 (experimental) and frame limits; background shader
   compilation and pipeline warm-up (shader cache kept between runs).
 - **Controls:** keyboard, mouse and controller remapping.
