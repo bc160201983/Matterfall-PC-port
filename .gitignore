@@ -1,0 +1,11 @@
+# Game files, player data and build output never belong in this repository.
+/game/
+/user/
+/dist/
+/analysis/
+*.pkg
+*.pak
+/gow3_pc/out/
+__pycache__/
+*.pyc
+matterfall.ini

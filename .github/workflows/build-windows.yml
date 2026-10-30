@@ -1,0 +1,99 @@
+# Builds the runtime with MSYS2 CLANG64 and packages Matterfall-windows (launcher, Python, runtime
+# and DLLs; no game files). The package is the workflow artifact "Matterfall-windows". A pushed tag
+# vX.Y.Z (tools/release_matterfall.sh) also publishes it as that release, with
+# tools/release-notes-matterfall/vX.Y.Z.md.
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # the release of a tag
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # Sources, patches and submodules keep their LF endings (git apply); long paths for
+      # FidelityFX's shader files.
+      - name: Git settings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --system core.longpaths true
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The Windows Python that the package carries (Tkinter, Pillow; cryptography for PKG install).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install Python packages
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check pillow cryptography
+
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: CLANG64
+          update: true
+          install: git patch curl
+          pacboy: >-
+            toolchain:p cmake:p ninja:p pkgconf:p python:p
+            vulkan-headers:p vulkan-loader:p vulkan-memory-allocator:p glslang:p
+            sdl3:p fmt:p boost:p robin-map:p xxhash:p ffmpeg:p zydis:p
+            spirv-tools:p spirv-headers:p spirv-cross:p
+
+      - name: Build the runtime
+        run: |
+          git config --global --add safe.directory '*'
+          export MSYS2_ROOT=$(cygpath -u '${{ steps.msys2.outputs.msys2-location }}')
+          export CXXFLAGS="-include cstdlib -include cstdio -include cwchar -include cmath -include new"
+          gow3_pc/build.sh
+
+      - name: Package
+        run: |
+          export MSYS2_ROOT=$(cygpath -u '${{ steps.msys2.outputs.msys2-location }}')
+          export PYTHON_HOME=$(cygpath -u "$pythonLocation")
+          tools/package_matterfall.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Matterfall-windows
+          path: dist/Matterfall-windows/
+          if-no-files-found: error
+
+      # The tag must match tools/VERSION_MATTERFALL (the package's VERSION, which the launcher's
+      # update notice compares).
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content tools/VERSION_MATTERFALL -Raw).Trim()
+          if ($env:TAG -ne "v$version") { throw "Tag $env:TAG does not match tools/VERSION_MATTERFALL ($version)" }
+          $notes = "tools/release-notes-matterfall/$env:TAG.md"
+          if (-not (Test-Path $notes)) { throw "Missing $notes" }
+          gh release create $env:TAG dist/Matterfall-windows.zip --verify-tag `
+            --title "Matterfall PC port $version" --notes-file $notes --latest
+
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: gow3_pc/out/gpu-build.log
+          if-no-files-found: ignore

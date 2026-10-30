@@ -1,0 +1,3 @@
+// The icon is drawn at package time (make_icon.py: no game art ships) into the staging folder,
+// which tools/package_matterfall.sh passes to windres as an include folder.
+1 ICON "matterfall.ico"
