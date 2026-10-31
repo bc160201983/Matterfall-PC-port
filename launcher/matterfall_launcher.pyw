@@ -938,8 +938,10 @@ class Launcher:
         self.toggle(page, "async_shaders", "Compile new shaders in the background",
                     "Fewer stutters in new areas: the game keeps running while shaders compile, an effect may "
                     "appear a moment later. Switch it off if something stays missing.")
-        self.toggle(page, "background_warmup", "Load the shader cache in the background",
-                    "The game starts at once and saved shaders load while you play.")
+        self.toggle(page, "warmup_while_playing", "Load the shader cache while the game starts",
+                    "Off (default): saved shaders load before the game starts (a few seconds of loading "
+                    "screen). On: the game starts at once and they load in the background, which crashed "
+                    "on some PCs.")
         self.toggle(page, "parallel_warmup", "Fast shader cache loading", "Builds cached pipelines on several CPU threads.")
         self.toggle(page, "pipeline_binaries", "Pipeline binary cache",
                     "Reuses compiled Vulkan pipelines between sessions: faster loading, but each kept "

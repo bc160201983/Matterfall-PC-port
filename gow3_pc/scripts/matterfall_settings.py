@@ -34,7 +34,7 @@ DEFAULTS = {
     # start options (environment)
     'output_resolution': '1080', 'pad_speaker_volume': '35', 'window_size': 'auto', 'frame_limit': '60', 'anisotropy': '0', 'language': '1', 'speakers': 'auto',
     # The runtime's own defaults: only a changed value becomes an environment variable.
-    'background_warmup': '1', 'parallel_warmup': '0', 'pipeline_binaries': '0', 'perf_log': '0',
+    'warmup_while_playing': '0', 'parallel_warmup': '0', 'pipeline_binaries': '0', 'perf_log': '0',
     'game_dir': '', 'update_dir': '',
 }
 
@@ -334,7 +334,12 @@ def environment(values):
     if (extra or height > 1080 or render_pixels(values) > 1920 * 1080
             or values.get('ue4_quality') in ('high', 'ultra')):
         env['GOW3_DMEM_SPARE_MB'] = '4096'
-    if values.get('background_warmup', '1') == '0':
+    # 1.0.4: the cached shaders load before the game starts (a short loading screen) instead of on
+    # background threads while the game starts its own GPU work. With the background load an AMD
+    # RX 7800 XT lost its device after the intro (GitHub issue #2: fine once the cache was deleted)
+    # and NVIDIA's driver crashed in a fence wait during it. A new key so that settings saved by
+    # 1.0.0-1.0.3 (background_warmup=1) do not keep the old default.
+    if values.get('warmup_while_playing', '0') != '1':
         env['GOW3_BACKGROUND_WARMUP'] = '0'
     for key, name in (('parallel_warmup', 'GOW3_PARALLEL_WARMUP'), ('pipeline_binaries', 'GOW3_PIPELINE_BINARIES'),
                       ('perf_log', 'GOW3_FRAME_STATS')):

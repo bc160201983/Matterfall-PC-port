@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.4 — 31 October 2026
+
+- The pipeline cache warm-up runs before the game starts (GOW3_BACKGROUND_WARMUP=0) instead of in
+  the background; new launcher option "Load the shader cache while the game starts" (off).
+  Issue #2 (AMD device lost after the intro with a warm cache).
+
 ## 1.0.3 — 31 October 2026
 
 - Audio: the pad speaker port (PS4 controller speaker voice lines) plays at 35% by default

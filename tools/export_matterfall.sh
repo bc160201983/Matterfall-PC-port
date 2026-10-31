@@ -74,7 +74,7 @@ fi
 cd "$dest"
 git add -A
 while read -r path; do
-    sha=$(git -C "$src/gow3_pc/$path" rev-parse HEAD)
+    sha=$(git -C "$src" rev-parse "HEAD:gow3_pc/$path")  # the pinned commit, also from a clean worktree
     git update-index --add --cacheinfo "160000,$sha,gow3_pc/$path"
 done <<< "$submodules"
 if git diff --cached --quiet; then
