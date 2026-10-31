@@ -118,6 +118,8 @@ ENGINE_FPS = [("60", "60"), ("120", "120"), ("240", "240")]
 FRAME_LIMITS = [("30", "30"), ("60", "60"), ("120", "120"), ("144", "144"), ("165", "165"), ("240", "240"),
                 ("half", "Half refresh")]
 FRAMES_QUEUED = [("1", "1 (lowest latency)"), ("2", "2"), ("0", "Unlimited")]
+PAD_SPEAKER = [("0", "Off"), ("20", "20%"), ("35", "35% (default)"), ("50", "50%"), ("75", "75%"),
+               ("100", "100% (full)")]
 SPEAKERS = [("auto", "Auto"), ("2", "Stereo"), ("6", "5.1"), ("8", "7.1")]
 # PS4 system language codes (sceSystemServiceParamGetInt LANG): the game's text and voices follow it.
 LANGUAGES = [("1", "English (US)"), ("18", "English (UK)"), ("2", "Français"), ("4", "Deutsch"),
@@ -1103,6 +1105,9 @@ class Launcher:
         self.section(page, "SOUND")
         self.choice(page, "speakers", "Speakers",
                     "The game's own stereo, 5.1 or 7.1 mix. Auto matches your Windows sound output.", SPEAKERS)
+        self.choice(page, "pad_speaker_volume", "Controller speaker sounds",
+                    "Short voice lines the PS4 plays on the controller's own speaker (multiplier up/lost, "
+                    "health low). Here they play on your speakers; this sets their volume.", PAD_SPEAKER)
         self.section(page, "LANGUAGE")
         self.choice(page, "language", "Game language",
                     "The console language the game sees: its menus, subtitles and voices follow it (when the "

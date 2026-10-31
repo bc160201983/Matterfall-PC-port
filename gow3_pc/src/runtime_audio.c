@@ -182,6 +182,21 @@ static ABI int32_t audio_close(int32_t handle) {
     return p ? 0 : error;
 }
 /* `pace`: wait for this port's next period. sceAudioOutOutputs waits once for all its ports. */
+/* The pad speaker (port type 4) is the PS4 controller's small built-in speaker; here it plays on
+ * the PC's speakers. Games send it short voice lines at full scale (Matterfall: "multiplier up",
+ * "health low"), which then were louder than the rest of the game (GitHub issue #2).
+ * GOW3_PAD_SPEAKER_VOLUME=<percent> (default 35, 0 mutes). */
+static float pad_speaker_gain(void) {
+    static float gain=-1.0f;
+    if (gain<0.0f) {
+        const char *e=getenv("GOW3_PAD_SPEAKER_VOLUME");
+        int percent=e && *e ? atoi(e) : 35;
+        if (percent<0) percent=0;
+        if (percent>100) percent=100;
+        gain=(float)percent/100.0f;
+    }
+    return gain;
+}
 static int32_t output_port(int32_t handle, const void *data, int pace) {
     int32_t error=0;
     pthread_mutex_lock(&table_lock);
@@ -199,7 +214,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
         for (size_t f=0;f<(size_t)p->frames;++f) for (int c=0;c<p->channels;++c) {
             int target=p->channels==8 && !p->std_layout ? remap[c] : c;
             size_t from=f*(size_t)p->channels+(size_t)c, to=f*(size_t)p->channels+(size_t)target;
-            float gain=(float)p->volume[c]/VOLUME_0DB;
+            float gain=(float)p->volume[c]/VOLUME_0DB*(p->type==4 ? pad_speaker_gain() : 1.0f);
             if (p->is_float) { float v; memcpy(&v,(const char *)data+from*4,4); v*=gain; memcpy(converted+to*4,&v,4); }
             else { int16_t v; memcpy(&v,(const char *)data+from*2,2); v=(int16_t)((float)v*gain); memcpy(converted+to*2,&v,2); }
         }

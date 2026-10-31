@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3 — 31 October 2026
+
+- Audio: the pad speaker port (PS4 controller speaker voice lines) plays at 35% by default
+  (GOW3_PAD_SPEAKER_VOLUME; launcher Audio -> Controller speaker sounds). Issue #2.
+
 ## 1.0.2 — 30 October 2026
 
 - File I/O: one lock per descriptor around read, write, lseek and pread/pwrite (positioned I/O

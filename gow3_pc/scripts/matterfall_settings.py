@@ -32,7 +32,7 @@ DEFAULTS = {
     **{f'ue4_{toggle}': 'console' for toggle in ue4_override.TOGGLES},
     'ue4_anti_aliasing': 'console', 'ue4_sharpen': 'off', 'ue4_upscale_filter': 'console',
     # start options (environment)
-    'output_resolution': '1080', 'window_size': 'auto', 'frame_limit': '60', 'anisotropy': '0', 'language': '1', 'speakers': 'auto',
+    'output_resolution': '1080', 'pad_speaker_volume': '35', 'window_size': 'auto', 'frame_limit': '60', 'anisotropy': '0', 'language': '1', 'speakers': 'auto',
     # The runtime's own defaults: only a changed value becomes an environment variable.
     'background_warmup': '1', 'parallel_warmup': '0', 'pipeline_binaries': '0', 'perf_log': '0',
     'game_dir': '', 'update_dir': '',
@@ -314,6 +314,8 @@ def environment(values):
         env['GOW3_ANISOTROPY'] = values['anisotropy']
     if values.get('language', '1').isdigit() and values.get('language', '1') != '1':
         env['GOW3_LANGUAGE'] = values['language']  # PS4 language code; the runtime's default is 1
+    if values.get('pad_speaker_volume', '35').isdigit():
+        env['GOW3_PAD_SPEAKER_VOLUME'] = values['pad_speaker_volume']
     if values.get('speakers', 'auto') in ('2', '6', '8'):
         env['GOW3_AUDIO_SPEAKERS'] = values['speakers']
     width, height = output_size(values)
